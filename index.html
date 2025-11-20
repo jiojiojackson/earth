@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>地球与月球系统 (HD 夜景版)</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Segoe UI', 'Roboto', sans-serif;
+        }
+
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 2;
+            color: #fff;
+            pointer-events: none;
+            text-shadow: 0 0 5px rgba(0, 0, 0, 0.8);
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #ffaa00;
+            backdrop-filter: blur(5px);
+        }
+
+        h1 {
+            font-size: 1.2rem;
+            margin: 0 0 5px 0;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .info-item {
+            font-size: 0.9rem;
+            margin: 3px 0;
+            font-family: monospace;
+            color: #ddd;
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #fff;
+            font-size: 1.2rem;
+            animation: blink 1s infinite;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="loading" id="loading-text">LOADING CITY LIGHTS...</div>
+
+    <div id="ui-layer">
+        <h1>REAL-TIME SOLAR SYNC (HD)</h1>
+        <div class="info-item" id="time-display">TIME: --:--:-- UTC</div>
+        <div class="info-item" id="sun-pos-display">SUN LON: --</div>
+        <div class="info-item" id="season-display">TILT (LAT): --</div>
+        <div class="info-item" id="mesh-detail">MESH: -- segments</div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <!-- 引入 Three.js 核心库 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- 引入 OrbitControls 控件库 -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        // 全局变量
+        let scene, camera, renderer, controls;
+        let earthGroup, stars;
+        let cloudMesh, earthMesh;
+        let moonPivot, moonMesh;
+        let sunLight;
+        
+        // 颜色配置
+        const colors = {
+            bg: 0x050505,
+            star: 0xffffff,
+            cityLights: 0xffcc88 // 暖金色的城市灯光
+        };
+
+        const textureLoader = new THREE.TextureLoader();
+        
+        // 纹理 URL
+        const textureURLs = {
+            map: 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_atmos_2048.jpg',
+            specular: 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_specular_2048.jpg',
+            normal: 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_normal_2048.jpg',
+            displacement: 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_elevation_4096.jpg', 
+            // 添加城市灯光贴图
+            lights: 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_lights_2048.png',
+            clouds: 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_clouds_1024.png',
+            moon: 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/moon_1024.jpg'
+        };
+
+        // 增加分段数
+        const EARTH_SEGMENTS = 400; 
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(colors.bg, 0.002);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 20, 50); 
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio); 
+            renderer.setClearColor(colors.bg);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.minDistance = 15;
+            controls.maxDistance = 100;
+            controls.autoRotate = false; 
+
+            createStarField();
+            createRealisticEarth(); 
+            createMoon(); 
+            createLights();
+
+            animate();
+            window.addEventListener('resize', onWindowResize, false);
+            document.getElementById('mesh-detail').textContent = `MESH: ${EARTH_SEGMENTS}x${EARTH_SEGMENTS} (AF: ${renderer.capabilities.getMaxAnisotropy()}x)`;
+        }
+
+        // 辅助函数：加载纹理并应用各向异性过滤
+        function loadTextureWithFilter(url) {
+            const tex = textureLoader.load(url);
+            tex.anisotropy = renderer.capabilities.getMaxAnisotropy(); 
+            return tex;
+        }
+
+        function createRealisticEarth() {
+            earthGroup = new THREE.Group();
+            scene.add(earthGroup);
+
+            // === A. 地球本体 ===
+            const earthGeo = new THREE.SphereGeometry(10, EARTH_SEGMENTS, EARTH_SEGMENTS);
+            
+            const earthMap = textureLoader.load(textureURLs.map, function() {
+                document.getElementById('loading-text').style.display = 'none'; 
+            });
+            earthMap.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+            const earthSpecular = loadTextureWithFilter(textureURLs.specular);
+            const earthNormal = loadTextureWithFilter(textureURLs.normal);
+            const earthDisplacement = loadTextureWithFilter(textureURLs.displacement);
+            const earthLights = loadTextureWithFilter(textureURLs.lights); // 加载灯光贴图
+
+            const earthMat = new THREE.MeshPhongMaterial({
+                map: earthMap,
+                specularMap: earthSpecular,
+                specular: new THREE.Color(0x333333),
+                shininess: 10,
+                normalMap: earthNormal,
+                normalScale: new THREE.Vector2(0.85, 0.85),
+                displacementMap: earthDisplacement,      
+                displacementScale: 0.3,                 
+                displacementBias: 0.0,
+                // 添加自发光 (城市灯光)
+                emissiveMap: earthLights,
+                emissive: new THREE.Color(colors.cityLights),
+                emissiveIntensity: 0.6 // 稍微调低一点，避免白天城市太亮，让它们在夜晚更明显
+            });
+
+            earthMesh = new THREE.Mesh(earthGeo, earthMat);
+            earthMesh.castShadow = true;  
+            earthMesh.receiveShadow = true;
+            earthMesh.rotation.y = -Math.PI / 2; 
+            earthGroup.add(earthMesh);
+
+            // === B. 云层 ===
+            const cloudGeo = new THREE.SphereGeometry(10.4, EARTH_SEGMENTS, EARTH_SEGMENTS); 
+            const cloudTexture = loadTextureWithFilter(textureURLs.clouds); 
+            
+            const cloudMat = new THREE.MeshLambertMaterial({
+                map: cloudTexture,
+                transparent: true,
+                opacity: 0.9,
+                blending: THREE.AdditiveBlending,
+                side: THREE.DoubleSide
+            });
+            cloudMesh = new THREE.Mesh(cloudGeo, cloudMat);
+            cloudMesh.rotation.y = -Math.PI / 2;
+            earthGroup.add(cloudMesh);
+
+            // === C. 大气辉光 ===
+            const glowGeo = new THREE.SphereGeometry(10.5, 64, 64);
+            const glowMat = new THREE.MeshBasicMaterial({
+                color: 0x00aaff,
+                transparent: true,
+                opacity: 0.1,
+                side: THREE.BackSide,
+                blending: THREE.AdditiveBlending
+            });
+            const glowMesh = new THREE.Mesh(glowGeo, glowMat);
+            earthGroup.add(glowMesh);
+        }
+
+        function createMoon() {
+            moonPivot = new THREE.Group();
+            scene.add(moonPivot);
+            
+            moonPivot.rotation.z = 5 * (Math.PI / 180); 
+
+            const moonGeo = new THREE.SphereGeometry(2.7, 64, 64); 
+            const moonTexture = loadTextureWithFilter(textureURLs.moon);
+            const moonMat = new THREE.MeshPhongMaterial({
+                map: moonTexture,
+                shininess: 0 
+            });
+
+            moonMesh = new THREE.Mesh(moonGeo, moonMat);
+            moonMesh.castShadow = true;
+            moonMesh.receiveShadow = true;
+            moonMesh.position.set(40, 0, 0); 
+
+            moonPivot.add(moonMesh);
+        }
+
+        function createStarField() {
+            const starGeo = new THREE.BufferGeometry();
+            const starCount = 4000;
+            const posArray = new Float32Array(starCount * 3);
+            for(let i = 0; i < starCount * 3; i++) {
+                posArray[i] = (Math.random() - 0.5) * 600; 
+            }
+            starGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+            const starMat = new THREE.PointsMaterial({
+                size: 0.15,
+                color: colors.star,
+                transparent: true,
+                opacity: 0.8,
+            });
+            stars = new THREE.Points(starGeo, starMat);
+            scene.add(stars);
+        }
+
+        function createLights() {
+            const ambientLight = new THREE.AmbientLight(0x111111);
+            scene.add(ambientLight);
+
+            sunLight = new THREE.DirectionalLight(0xffffff, 1.8);
+            sunLight.castShadow = true;
+            
+            sunLight.shadow.mapSize.width = 4096;
+            sunLight.shadow.mapSize.height = 4096;
+            
+            sunLight.shadow.camera.near = 0.5;
+            sunLight.shadow.camera.far = 500;
+            sunLight.shadow.camera.left = -50;
+            sunLight.shadow.camera.right = 50;
+            sunLight.shadow.camera.top = 50;
+            sunLight.shadow.camera.bottom = -50;
+            sunLight.shadow.bias = -0.0001; 
+            
+            scene.add(sunLight);
+        }
+
+        function updateSunPosition() {
+            const now = new Date();
+            
+            const hours = now.getUTCHours();
+            const minutes = now.getUTCMinutes();
+            const seconds = now.getUTCSeconds();
+            const totalHours = hours + minutes / 60 + seconds / 3600;
+
+            const sunLongitudeDeg = (12 - totalHours) * 15;
+            const sunLongitudeRad = THREE.MathUtils.degToRad(sunLongitudeDeg);
+
+            const start = new Date(now.getFullYear(), 0, 0);
+            const diff = now - start;
+            const oneDay = 1000 * 60 * 60 * 24;
+            const dayOfYear = Math.floor(diff / oneDay);
+            
+            const declinationDeg = -23.44 * Math.cos((2 * Math.PI / 365) * (dayOfYear + 10));
+            const declinationRad = THREE.MathUtils.degToRad(declinationDeg);
+
+            const dist = 100; 
+            
+            sunLight.position.x = dist * Math.cos(declinationRad) * Math.sin(sunLongitudeRad);
+            sunLight.position.y = dist * Math.sin(declinationRad);
+            sunLight.position.z = dist * Math.cos(declinationRad) * Math.cos(sunLongitudeRad);
+            
+            const timeString = `${hours.toString().padStart(2,'0')}:${minutes.toString().padStart(2,'0')}:${seconds.toString().padStart(2,'0')} UTC`;
+            document.getElementById('time-display').textContent = `TIME: ${timeString}`;
+            document.getElementById('sun-pos-display').textContent = `SUN ANGLE: ${sunLongitudeDeg.toFixed(2)}°`;
+            document.getElementById('season-display').textContent = `TILT (LAT): ${declinationDeg.toFixed(2)}°`;
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+
+            updateSunPosition();
+
+            if(cloudMesh) {
+                cloudMesh.rotation.y += 0.00005; 
+            }
+
+            if(moonPivot) {
+                moonPivot.rotation.y += 0.0005; 
+            }
+            if(moonMesh) {
+                moonMesh.rotation.y += 0.001;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        init();
+
+    </script>
+</body>
+</html>
